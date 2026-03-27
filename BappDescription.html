@@ -1,0 +1,22 @@
+<p>ByteBanter is a Burp Suite extension that uses BurpAI to generate context-aware payloads for Burp Intruder. It registers as a custom payload generator, supplying dynamically created payloads based on user-defined prompts during Intruder attacks.</p>
+
+<h2>Features</h2>
+<ul>
+  <li>Generates payloads dynamically using BurpAI, guided by user-defined prompts describing the target testing scenario.</li>
+  <li>Registers as a custom payload generator within Intruder, selectable via the Extension-generated payload type.</li>
+  <li>Allows users to write and customize prompts that instruct the AI model on what payloads to produce.</li>
+  <li>Optionally tracks target HTTP responses and extracts content using a configurable regular expression to inform payload generation.</li>
+  <li>Includes a prompt optimization feature that asks BurpAI to refine a user-supplied prompt automatically.</li>
+  <li>Persists all settings automatically across sessions.</li>
+</ul>
+
+<h2>Usage</h2>
+<ol>
+  <li>After loading the extension, navigate to the ByteBanter tab that appears in the main interface.</li>
+  <li>Write a prompt in the provided field to instruct the AI model on the type of payloads to generate.</li>
+  <li>Optionally enable response tracking and enter a regular expression to extract relevant content from HTTP response bodies.</li>
+  <li>Optionally click the <code class=InlineCode>Optimize!</code> button to have BurpAI refine your prompt.</li>
+  <li>Open the Intruder tab, configure your target and payload positions as usual.</li>
+  <li>In the Intruder Payloads tab, set the payload type to <code class=InlineCode>Extension-generated</code>, then select ByteBanter from the list of available generators.</li>
+  <li>Start the Intruder attack. ByteBanter will supply AI-generated payloads dynamically for each request.</li>
+</ol>

@@ -1,0 +1,13 @@
+Uuid: 52a262ab411e4d5ab7f1d3c8fc13cdb3
+ExtensionType: 1
+Name: ByteBanter, BurpAI Intruder Payload Generator
+RepoName: byte-banter
+ScreenVersion: 1.0.0
+SerialVersion: 1
+MinPlatformVersion: 19
+ProOnly: True
+Author: Andrea Braschi
+ShortDescription: Generates AI-driven payloads for Burp Intruder using BurpAI.
+EntryPoint: bytebanter-1.0-SNAPSHOT-uber.jar
+BuildCommand: mvn clean package
+SupportedProducts: Pro
