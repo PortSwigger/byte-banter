@@ -5,11 +5,13 @@ import burp.api.montoya.ai.chat.Message;
 import burp.api.montoya.ai.chat.PromptException;
 import burp.api.montoya.ai.chat.PromptOptions;
 import burp.api.montoya.ai.chat.PromptResponse;
+import burp.api.montoya.core.Annotations;
 import burp.api.montoya.http.handler.HttpResponseReceived;
 import burp.api.montoya.http.handler.ResponseReceivedAction;
 import com.anvilsecure.bytebanter.AIEngineUIs.BurpAIEngineUI;
 import org.json.JSONArray;
 import org.json.JSONObject;
+
 import javax.swing.JOptionPane;
 
 import java.util.Arrays;
@@ -19,25 +21,10 @@ import java.util.regex.Pattern;
 
 public class BurpAIEngine extends AIEngine {
 
-    int counter = 0;
-    Boolean oldInfiniteFlag = false;
-    int requestsLimit = 1;
-
     public BurpAIEngine(MontoyaApi api) {
         super(api, "BurpAI");
         super.UI = new BurpAIEngineUI(this);
         super.messages = new JSONArray();
-    }
-
-    private boolean isAIEnabled() {
-        if (!api.ai().isEnabled()) {
-            JOptionPane.showMessageDialog(null,
-                    "ByteBanter: Unable to generate payloads or optimize prompts because BurpAI is disabled!"
-                            + "\nOr you have finished your tokens!",
-                    "ByteBanter Error", JOptionPane.ERROR_MESSAGE);
-            return false;
-        }
-        return true;
     }
 
     @Override
@@ -47,44 +34,47 @@ public class BurpAIEngine extends AIEngine {
         }
         JSONObject params = UI.getParams();
         JSONObject data = packData(new JSONObject(), params);
-        Boolean isInfiniteRequests = data.getBoolean("isInfiniteRequests");
-        // reset counter if attack length changes
-        if (oldInfiniteFlag != isInfiniteRequests || this.requestsLimit != data.getInt("requestsLimit")) {
+
+        // Throttling control values come from the UI params, not from the API body data.
+        isInfiniteRequests = params.optBoolean("isInfiniteRequests", false);
+        int newLimit = params.optInt("requestsLimit", 1000000);
+        if (oldInfiniteFlag != isInfiniteRequests || this.requestsLimit != newLimit) {
             counter = 0;
         }
         oldInfiniteFlag = isInfiniteRequests;
-        this.requestsLimit = data.getInt("requestsLimit");
+        this.requestsLimit = newLimit;
+
         // check if the number of maximum requests has been reached
         if (isInfiniteRequests || counter < this.requestsLimit) {
             counter++;
+
             // reset messages on "stateful" change or prompt change
             boolean settingsChanged = (isStateful != params.getBoolean("stateful"))
-                    || !prompt.equals(params.getString("prompt"));
+                    || !lastUsedPrompt.equals(params.getString("prompt"));
 
             isStateful = params.getBoolean("stateful");
-            prompt = params.getString("prompt");
+            lastUsedPrompt = params.getString("prompt");
 
-            // Reset if settings changed OR we are in stateless mode (fresh request every
-            // time)
+            // Reset if settings changed OR we are in stateless mode (fresh request every time)
             if (settingsChanged || !isStateful) {
                 messages = new JSONArray();
-                messages.put(Message.systemMessage(prompt));
+                messages.put(new JSONObject().put("role", "system").put("content", lastUsedPrompt));
             }
 
             // If stateless, always add the default trigger message
             if (!isStateful) {
-                messages.put(Message.userMessage(DEFAULT_MESSAGE));
+                messages.put(new JSONObject().put("role", "user").put("content", DEFAULT_MESSAGE));
             } else {
                 // In stateful mode, if we just reset (have [System]), add the trigger.
                 // Otherwise, 'messages' already contains history.
                 if (messages.length() == 1) {
-                    messages.put(Message.userMessage(DEFAULT_MESSAGE));
+                    messages.put(new JSONObject().put("role", "user").put("content", DEFAULT_MESSAGE));
                 }
             }
             data.remove("messages");
             data.put("messages", messages);
             String responseMessage = sendRequestToAI(data, params);
-            messages.put(Message.assistantMessage(responseMessage));
+            messages.put(new JSONObject().put("role", "assistant").put("content", responseMessage));
             return responseMessage;
         } else {
             counter = 0;
@@ -100,24 +90,19 @@ public class BurpAIEngine extends AIEngine {
         }
         JSONObject params = UI.getParams();
         JSONObject data = packData(new JSONObject(), params);
+        ;
         JSONArray m = new JSONArray();
-        m.put(Message.systemMessage(prompt));
-        m.put(Message.userMessage(user_input));
+        m.put(new JSONObject().put("role", "system").put("content", prompt));
+        m.put(new JSONObject().put("role", "user").put("content", user_input));
         data.remove("messages");
         data.put("messages", m);
 
-        String r = sendRequestToAI(data, params);
-        if (r == null) {
-            return prompt;
-        }
-        return r;
+        return sendRequestToAI(data, params);
     }
 
     @Override
     protected JSONObject packData(JSONObject data, JSONObject params) {
         data.put("temperature", params.getDouble("temperature") / 100);
-        data.put("isInfiniteRequests", params.getBoolean("isInfiniteRequests"));
-        data.put("requestsLimit", params.getInt("requestsLimit"));
         return data;
     }
 
@@ -127,11 +112,20 @@ public class BurpAIEngine extends AIEngine {
             // set the temperature with PromptOptions
             PromptOptions options = PromptOptions.promptOptions().withTemperature(data.getDouble("temperature"));
 
-            // convert from JSONArray to BurpAI Message Array
+            // Convert from JSONArray of {role, content} JSONObjects to BurpAI Message[].
             JSONArray messages = data.getJSONArray("messages");
             Message[] context = new Message[messages.length()];
             for (int i = 0; i < messages.length(); i++) {
-                context[i] = (Message) messages.get(i);
+                JSONObject m = messages.getJSONObject(i);
+                String role = m.getString("role");
+                String content = m.getString("content");
+                if ("system".equals(role)) {
+                    context[i] = Message.systemMessage(content);
+                } else if ("assistant".equals(role)) {
+                    context[i] = Message.assistantMessage(content);
+                } else {
+                    context[i] = Message.userMessage(content);
+                }
             }
 
             // Execute Prompt
@@ -143,7 +137,7 @@ public class BurpAIEngine extends AIEngine {
                     "\n(Mostly this error could be related to BurpAI disabled or AI credit exhausted)",
                     "ByteBanter Error", JOptionPane.ERROR_MESSAGE);
             // return null, to stop payload generation.
-            return null;
+            throw new PromptException(e.getMessage());
         }
     }
 
@@ -155,10 +149,13 @@ public class BurpAIEngine extends AIEngine {
             if (matcher.find()) {
                 String rxp = params.getBoolean("b64") ? Arrays.toString(Base64.getDecoder().decode(matcher.group(1)))
                         : matcher.group(1);
-                messages.put(Message.userMessage(rxp));
+                messages.put(new JSONObject().put("role", "user").put("content", rxp));
             }
         }
-        return ResponseReceivedAction.continueWith(httpResponseReceived);
+        Annotations a = runVerificationIfApplicable(httpResponseReceived, params);
+        return a != null
+                ? ResponseReceivedAction.continueWith(httpResponseReceived, a)
+                : ResponseReceivedAction.continueWith(httpResponseReceived);
     }
 
 }

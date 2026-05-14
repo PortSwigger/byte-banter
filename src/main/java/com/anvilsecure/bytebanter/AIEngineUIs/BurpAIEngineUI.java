@@ -1,17 +1,14 @@
 package com.anvilsecure.bytebanter.AIEngineUIs;
 
 import com.anvilsecure.bytebanter.AIEngines.AIEngine;
-import org.json.JSONObject;
 
 import javax.swing.*;
+import javax.swing.border.TitledBorder;
 import javax.swing.text.NumberFormatter;
 import java.awt.*;
 import java.text.NumberFormat;
 
 public class BurpAIEngineUI extends AIEngineUI {
-
-    private JCheckBox infiniteRequestCheck;
-    private JFormattedTextField requestLimitField;
 
     public BurpAIEngineUI(AIEngine engine) {
         super(engine);
@@ -19,48 +16,45 @@ public class BurpAIEngineUI extends AIEngineUI {
 
     @Override
     public JPanel getAIConfPanel() {
-        JPanel confPanel = new JPanel(new GridBagLayout());
+        JPanel configPanel = new JPanel(new GridBagLayout());
+        configPanel.setBorder(new TitledBorder("Engine Configuration:"));
         GridBagConstraints gbc = new GridBagConstraints();
         gbc.fill = GridBagConstraints.HORIZONTAL;
-        gbc.insets = new Insets(5, 5, 5, 5);
+        gbc.insets = new Insets(2, 2, 2, 2);
 
-        // pannel title
-        gbc.gridx = 0;
-        gbc.gridy = 0;
-        gbc.gridwidth = 2;
-        confPanel.add(new JLabel("Requests Limit Configuration:"), gbc);
+        // --- Request Limit Configuration ---
+        JPanel limitPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        limitPanel.setBorder(new TitledBorder("Request Limits:"));
 
-        // Checkbox for infinite requests
         infiniteRequestCheck = new JCheckBox("Infinite Requests");
-        gbc.gridy = 1;
-        gbc.gridwidth = 1;
-        confPanel.add(infiniteRequestCheck, gbc);
+        limitPanel.add(infiniteRequestCheck);
 
-        // numeric text field (1 - 1.000.000)
+        // Create formatter for request limit
         NumberFormat format = NumberFormat.getIntegerInstance();
-        format.setGroupingUsed(false); // remove separator to avoid parsing errors
+        format.setGroupingUsed(false);
         NumberFormatter formatter = new NumberFormatter(format);
         formatter.setValueClass(Integer.class);
         formatter.setMinimum(1);
         formatter.setMaximum(1000000);
-        formatter.setAllowsInvalid(false); // avoid invalid charactes
-        formatter.setCommitsOnValidEdit(true); // update vlues
+        formatter.setAllowsInvalid(false);
+        formatter.setCommitsOnValidEdit(true);
 
         requestLimitField = new JFormattedTextField(formatter);
-        requestLimitField.setValue(1000000); // defailt value
-        requestLimitField.setColumns(10);
+        requestLimitField.setValue(10); // default
+        requestLimitField.setColumns(8);
+        limitPanel.add(new JLabel("Limit:"));
+        limitPanel.add(requestLimitField);
 
-        gbc.gridx = 1;
-        confPanel.add(requestLimitField, gbc);
-
-        // --- Logic ---
         infiniteRequestCheck.addActionListener(e -> {
-            boolean isInfinite = infiniteRequestCheck.isSelected();
-            // Disable input if infinite is checked
-            requestLimitField.setEnabled(!isInfinite);
+            requestLimitField.setEnabled(!infiniteRequestCheck.isSelected());
         });
 
-        return confPanel;
+        gbc.gridx = 0;
+        gbc.gridy = 0;
+        gbc.weightx = 1.0;
+        configPanel.add(limitPanel, gbc);
+
+        return configPanel;
     }
 
     @Override
@@ -71,23 +65,12 @@ public class BurpAIEngineUI extends AIEngineUI {
         JLabel tempLabel = new JLabel("Temperature: " + String.format("%.2f", temperatureSlider.getValue() / 100.0));
         temperatureSlider.addChangeListener(
                 e -> tempLabel.setText("Temperature: " + String.format("%.2f", temperatureSlider.getValue() / 100.0)));
-        paramPanel.add(tempLabel);
-        paramPanel.add(temperatureSlider);
+
+        JPanel tempPanel = new JPanel(new BorderLayout());
+        tempPanel.add(tempLabel, BorderLayout.NORTH);
+        tempPanel.add(temperatureSlider, BorderLayout.CENTER);
+
+        paramPanel.add(tempPanel);
         return paramPanel;
-    }
-
-    @Override
-    public JSONObject getParams() {
-        JSONObject params = super.getParams();
-        params.put("isInfiniteRequests", infiniteRequestCheck.isSelected());
-        params.put("requestsLimit", requestLimitField.getValue());
-        return params;
-    }
-
-    @Override
-    public void loadParams(JSONObject params) {
-        super.loadParams(params);
-        infiniteRequestCheck.setSelected(params.optBoolean("isInfiniteRequests"));
-        requestLimitField.setValue(params.optInt("requestsLimit"));
     }
 }
