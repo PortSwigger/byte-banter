@@ -3,8 +3,8 @@ ExtensionType: 1
 Name: ByteBanter, AI Intruder Payload Generator
 RepoName: byte-banter
 ScreenVersion: 2.0.0
-SerialVersion: 2
-MinPlatformVersion: 19
+SerialVersion: 3
+MinPlatformVersion: 28
 ProOnly: True
 Author: Andrea Braschi
 ShortDescription: Generates AI-driven payloads for Burp Intruder using BurpAI.
