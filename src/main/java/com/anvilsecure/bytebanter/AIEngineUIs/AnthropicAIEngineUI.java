@@ -21,6 +21,12 @@ public class AnthropicAIEngineUI extends AIEngineUI {
 
     private JComboBox<String> modelCombo;
 
+    // Sampling field gates: newer Claude models reject requests that specify both
+    // `temperature` and `top_p` simultaneously, so each parameter is opt-in.
+    // Defaults match Anthropic's current guidance: send temperature only.
+    private JCheckBox sendTemperatureCheck;
+    private JCheckBox sendTopPCheck;
+
     public AnthropicAIEngineUI(AIEngine engine) {
         super(engine);
     }
@@ -63,22 +69,53 @@ public class AnthropicAIEngineUI extends AIEngineUI {
         maxTokensPanel.add(maxTokensSpinner, BorderLayout.CENTER);
         paramPanel.add(maxTokensPanel);
 
-        // Temperature
+        // Temperature and Top P are mutually exclusive on newer Claude models
+        // (the API rejects requests that specify both). The UI enforces that:
+        // ticking one auto-unticks the other. Both off is allowed → the model
+        // applies its own defaults.
         temperatureSlider = new JSlider(0, 100, 70);
         JLabel tempLabel = new JLabel("Temperature: " + String.format("%.2f", temperatureSlider.getValue() / 100.0));
         temperatureSlider.addChangeListener(
                 e -> tempLabel.setText("Temperature: " + String.format("%.2f", temperatureSlider.getValue() / 100.0)));
-        JPanel tempPanel = new JPanel(new BorderLayout());
-        tempPanel.add(tempLabel, BorderLayout.NORTH);
-        tempPanel.add(temperatureSlider, BorderLayout.CENTER);
-        paramPanel.add(tempPanel);
+        sendTemperatureCheck = new JCheckBox("Send temperature", true);
 
-        // Top P
         topPSlider = new JSlider(0, 20, 20);
         JLabel topPLabel = new JLabel("Top P: " + String.format("%.2f", topPSlider.getValue() / 20.0));
         topPSlider.addChangeListener(
                 e -> topPLabel.setText("Top P: " + String.format("%.2f", topPSlider.getValue() / 20.0)));
+        sendTopPCheck = new JCheckBox("Send top_p", false);
+        topPSlider.setEnabled(false);
+        topPLabel.setEnabled(false);
+
+        sendTemperatureCheck.addActionListener(e -> {
+            boolean on = sendTemperatureCheck.isSelected();
+            if (on && sendTopPCheck.isSelected()) {
+                sendTopPCheck.setSelected(false);
+                topPSlider.setEnabled(false);
+                topPLabel.setEnabled(false);
+            }
+            temperatureSlider.setEnabled(on);
+            tempLabel.setEnabled(on);
+        });
+        sendTopPCheck.addActionListener(e -> {
+            boolean on = sendTopPCheck.isSelected();
+            if (on && sendTemperatureCheck.isSelected()) {
+                sendTemperatureCheck.setSelected(false);
+                temperatureSlider.setEnabled(false);
+                tempLabel.setEnabled(false);
+            }
+            topPSlider.setEnabled(on);
+            topPLabel.setEnabled(on);
+        });
+
+        JPanel tempPanel = new JPanel(new BorderLayout());
+        tempPanel.add(sendTemperatureCheck, BorderLayout.WEST);
+        tempPanel.add(tempLabel, BorderLayout.NORTH);
+        tempPanel.add(temperatureSlider, BorderLayout.CENTER);
+        paramPanel.add(tempPanel);
+
         JPanel topPPanel = new JPanel(new BorderLayout());
+        topPPanel.add(sendTopPCheck, BorderLayout.WEST);
         topPPanel.add(topPLabel, BorderLayout.NORTH);
         topPPanel.add(topPSlider, BorderLayout.CENTER);
         paramPanel.add(topPPanel);
@@ -90,6 +127,12 @@ public class AnthropicAIEngineUI extends AIEngineUI {
     public JSONObject getParams() {
         JSONObject params = super.getParams();
         params.put("model", String.valueOf(modelCombo.getSelectedItem()));
+        if (sendTemperatureCheck != null) {
+            params.put("send_temperature", sendTemperatureCheck.isSelected());
+        }
+        if (sendTopPCheck != null) {
+            params.put("send_top_p", sendTopPCheck.isSelected());
+        }
         return params;
     }
 
@@ -97,5 +140,24 @@ public class AnthropicAIEngineUI extends AIEngineUI {
     public void loadParams(JSONObject params) {
         super.loadParams(params);
         modelCombo.setSelectedItem(params.optString("model", DEFAULT_MODELS[0]));
+        boolean tempOn = params.optBoolean("send_temperature", true);
+        boolean topPOn = params.optBoolean("send_top_p", false);
+        // Defend against a stale settings blob with both flags set: keep
+        // temperature, drop top_p (matches the new-install default).
+        if (tempOn && topPOn) {
+            topPOn = false;
+        }
+        if (sendTemperatureCheck != null) {
+            sendTemperatureCheck.setSelected(tempOn);
+            if (temperatureSlider != null) {
+                temperatureSlider.setEnabled(tempOn);
+            }
+        }
+        if (sendTopPCheck != null) {
+            sendTopPCheck.setSelected(topPOn);
+            if (topPSlider != null) {
+                topPSlider.setEnabled(topPOn);
+            }
+        }
     }
 }

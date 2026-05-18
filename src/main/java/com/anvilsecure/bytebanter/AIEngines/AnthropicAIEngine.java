@@ -26,8 +26,17 @@ public class AnthropicAIEngine extends AIEngine {
     protected JSONObject packData(JSONObject data, JSONObject params) {
         data.put("model", params.getString("model"));
         data.put("max_tokens", params.getInt("max_tokens"));
-        data.put("temperature", params.getDouble("temperature") / 100);
-        data.put("top_p", params.getDouble("top_p") / 20);
+        // Newer Claude models (Sonnet 4.6, Opus 4.7) reject requests that specify
+        // both `temperature` and `top_p`. The UI enforces mutual exclusion; this
+        // is a defensive guard in case both flags somehow arrive true together —
+        // temperature wins (matches the default).
+        boolean sendTemperature = params.optBoolean("send_temperature", true);
+        boolean sendTopP = params.optBoolean("send_top_p", false);
+        if (sendTemperature) {
+            data.put("temperature", params.getDouble("temperature") / 100);
+        } else if (sendTopP) {
+            data.put("top_p", params.getDouble("top_p") / 20);
+        }
         return data;
     }
 

@@ -1,32 +1,30 @@
 package com.anvilsecure.bytebanter.AIEngines;
 
 import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.utilities.shell.ExecuteOptions;
+import burp.api.montoya.utilities.shell.ExitCodeBehavior;
+import burp.api.montoya.utilities.shell.ProcessExecutionException;
+import burp.api.montoya.utilities.shell.StderrBehavior;
+import burp.api.montoya.utilities.shell.TimeoutBehavior;
 import com.anvilsecure.bytebanter.AIEngineUIs.ClaudeCodeEngineUI;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 import javax.swing.JOptionPane;
-import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Engine that bridges ByteBanter to the Claude Code CLI ("claude -p"), letting
  * the user route prompts through their existing Anthropic subscription
  * (Claude Pro / Max) instead of paying per token via the API.
  *
- * <p>Notes:</p>
- * <ul>
- *   <li>Requires the Claude Code CLI to be installed on the host running Burp.</li>
- *   <li>Each prompt spawns a subprocess; expect ~1-3s of overhead per call.</li>
- *   <li>Authentication is delegated to Claude Code (whatever method the user
- *       has configured: API key, OAuth, Bedrock, Vertex).</li>
- *   <li>This engine bypasses the Montoya networking API. It is fine for
- *       personal use but is unlikely to satisfy PortSwigger's BApp Store
- *       policy for third-party LLM extensions.</li>
- * </ul>
+ * <p>Subprocess execution is delegated to Montoya's
+ * {@code api.utilities().shellUtils()} (added in Montoya 2025.6). The transcript
+ * is passed as the {@code -p} argument value; stderr is merged into the result
+ * stream so any CLI diagnostic surfaces in the error dialog. Authentication is
+ * delegated to Claude Code itself (API key, OAuth, Bedrock, or Vertex).</p>
  */
 public class ClaudeCodeEngine extends AIEngine {
 
@@ -56,8 +54,8 @@ public class ClaudeCodeEngine extends AIEngine {
         String model = params.optString("model", "").trim();
 
         // Convert messages[] into:
-        //   - systemPrompt (concatenated, passed via --system-prompt)
-        //   - turnsText (user/assistant turns, piped via stdin as a transcript)
+        //   - systemPrompt (concatenated, passed via --append-system-prompt)
+        //   - turnsText    (user/assistant turns, passed as the -p argument)
         JSONArray msgs = data.getJSONArray("messages");
         StringBuilder systemPromptB = new StringBuilder();
         StringBuilder turns = new StringBuilder();
@@ -79,6 +77,8 @@ public class ClaudeCodeEngine extends AIEngine {
         List<String> cmd = new ArrayList<>();
         cmd.add(binPath);
         cmd.add("-p");
+        // ShellUtils does not pipe stdin; pass the transcript as the prompt arg.
+        cmd.add(turns.toString());
         cmd.add("--output-format");
         cmd.add("text");
         if (!model.isEmpty()) {
@@ -90,44 +90,23 @@ public class ClaudeCodeEngine extends AIEngine {
             cmd.add(systemPromptB.toString());
         }
 
+        ExecuteOptions opts = ExecuteOptions.executeOptions()
+                .withTimeout(Duration.ofSeconds(PROCESS_TIMEOUT_SEC))
+                .withTimeoutBehavior(TimeoutBehavior.FAIL_ON_TIMEOUT)
+                .withStderrBehavior(StderrBehavior.MERGE)
+                .withExitCodeBehavior(ExitCodeBehavior.FAIL_ON_NON_ZERO);
+
         try {
-            ProcessBuilder pb = new ProcessBuilder(cmd);
-            pb.redirectErrorStream(false);
-            Process p = pb.start();
-
-            try (OutputStream stdin = p.getOutputStream()) {
-                stdin.write(turns.toString().getBytes(StandardCharsets.UTF_8));
-            }
-
-            byte[] stdoutBytes = p.getInputStream().readAllBytes();
-            byte[] stderrBytes = p.getErrorStream().readAllBytes();
-
-            if (!p.waitFor(PROCESS_TIMEOUT_SEC, TimeUnit.SECONDS)) {
-                p.destroyForcibly();
-                JOptionPane.showMessageDialog(null,
-                        "ByteBanter: Claude Code timed out after " + PROCESS_TIMEOUT_SEC + "s.",
-                        "ByteBanter Error", JOptionPane.ERROR_MESSAGE);
-                return null;
-            }
-
-            if (p.exitValue() != 0) {
-                String err = new String(stderrBytes, StandardCharsets.UTF_8).trim();
-                JOptionPane.showMessageDialog(null,
-                        "ByteBanter: Claude Code exited with code " + p.exitValue()
-                                + (err.isEmpty() ? "" : ":\n" + err),
-                        "ByteBanter Error", JOptionPane.ERROR_MESSAGE);
-                return null;
-            }
-
-            return new String(stdoutBytes, StandardCharsets.UTF_8).trim();
-        } catch (java.io.IOException e) {
+            String output = api.utilities()
+                    .shellUtils()
+                    .execute(opts, cmd.toArray(new String[0]));
+            return output == null ? "" : output.trim();
+        } catch (ProcessExecutionException e) {
             JOptionPane.showMessageDialog(null,
-                    "ByteBanter: failed to launch '" + binPath + "'. Is the Claude Code CLI installed and on PATH?\n"
+                    "ByteBanter: Claude Code execution failed.\n"
+                            + "Check that '" + binPath + "' is installed and on PATH.\n\n"
                             + e.getMessage(),
                     "ByteBanter Error", JOptionPane.ERROR_MESSAGE);
-            return null;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
             return null;
         }
     }
