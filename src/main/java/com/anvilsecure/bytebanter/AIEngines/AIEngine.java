@@ -170,7 +170,11 @@ public abstract class AIEngine implements HttpHandler {
             data.remove("messages");
             data.put("messages", messages);
             String responseMessage = sendRequestToAI(data, params);
-            messages.put(new JSONObject().put("role", "assistant").put("content", responseMessage));
+            // Only advance conversation history on success; a null response (e.g. CLI
+            // crash, API error) must not store a null-content entry that corrupts state.
+            if (responseMessage != null) {
+                messages.put(new JSONObject().put("role", "assistant").put("content", responseMessage));
+            }
             return responseMessage;
         } else {
             counter = 0; // reset for next run
