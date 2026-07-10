@@ -6,6 +6,8 @@
 * **Seamless Burp Integration:** Registers as a custom payload generator within Burp Intruder, allowing easy selection and use.
 * **Configurable Prompts:** Users can define and customize prompts to guide the LLM in generating desired payloads.
 * **Support for Multiple LLM Providers:** Burp AI is the default provider; the extension also supports Ollama, the Anthropic Messages API, any OpenAI-compatible `chat/completions` endpoint (e.g. OpenAI, Oobabooga, LM Studio, vLLM), and the Claude Code CLI (locally installed) for users who prefer to route prompts through their existing Anthropic subscription.
+* **ASCII Smuggling:** optionally hide text inside the invisible Unicode *Tags* block (U+E0000–U+E007F) so generated payloads carry instructions that are invisible in most UIs yet decoded by many downstream LLMs (see [ASCII Smuggling](#ascii-smuggling)).
+* **Scriptable Response Matching:** the Stateful Interaction feature has a Script mode where a small Groovy script — instead of a regex — extracts the portion of each response fed back into a stateful conversation, with a syntax-highlighted pop-up editor, a Test runner, AI script generation from an example response, and a "Send to extraction script" right-click action (see [Prompt and response context](#prompt-and-response-context)).
 
 This version of ByteBanter complies with the BApp Store standards for extensions that use third-party LLMs:
 * Declares `EnhancedCapability.AI_FEATURES` and verifies that Burp AI is enabled before any LLM call.
@@ -90,16 +92,56 @@ In the **ByteBanter** extension tab, select the engine you want to use from the 
 
   How it works internally:
   * ByteBanter spawns `claude -p --output-format text` and pipes the conversation into the process via stdin.
-  * The system role from the conversation is forwarded with `--append-system-prompt`.
+  * The system role from the conversation is forwarded with `--system-prompt` (which *replaces* Claude Code's default coding-agent system prompt), together with `--exclude-dynamic-system-prompt-sections`, so the engine acts as a pure generator instead of inheriting the agent persona and tone.
   * Authentication is handled entirely by Claude Code itself (whatever you configured: API key, OAuth via `claude.ai`, AWS Bedrock, Google Vertex).
+
+  > **Note on refusals:** even with the default prompt replaced, driving Claude Code under a **Claude.ai subscription (OAuth)** applies the stricter consumer safety tier and may still refuse to emit raw offensive payloads. For payload generation, the **Anthropic** engine (direct Messages API with an API key) is the appropriate channel.
 
   Caveats:
   * Requires the Claude Code CLI to be installed on the host running Burp.
   * Each LLM call spawns a subprocess (≈ 1–3 seconds of overhead). With Success Verification enabled this adds up quickly, so use a small `requestsLimit`.
-  * **BApp Store note:** this engine bypasses the Montoya networking API (the subprocess makes its own HTTP calls), so it does not satisfy PortSwigger's policy for third-party LLM extensions. It ships with the source for personal/research use; if you build a JAR you intend to submit to the BApp Store, comment out the `engines.add(new ClaudeCodeEngine(api))` line in `ByteBanterPayloadGenerator` first.
+  * **Note:** this engine bypasses the Montoya networking API — the subprocess makes its own HTTP calls, and authentication/transport are handled entirely by the locally installed Claude Code CLI.
 
 ### Prompt and response context
-Write your prompt to instruct the model on the kind of payloads to generate. Use the **Optimize!** button to rewrite your prompt while preserving the attack goal and your concrete details (target names, parameter names, secrets, regex patterns). Toggle **Stateful Interaction** to keep the conversation across payloads and provide the regex used to extract the relevant portion of the target response into the conversation.
+Write your prompt to instruct the model on the kind of payloads to generate. Use the **Optimize!** button to rewrite your prompt while preserving the attack goal and your concrete details (target names, parameter names, secrets, regex patterns). Toggle **Stateful Interaction** to keep the conversation across payloads and extract the relevant portion of each target response back into the conversation.
+
+The **Stateful Interaction** panel (enabled with its **Enable** checkbox) offers two **Extraction modes**:
+
+* **Regex** (default): capture group 1 of the regex, matched against the response body, is fed back as the next turn. Optionally Base64-decode it.
+* **Script (Groovy):** write a small Groovy script that returns the string to feed back (or `null` to skip this response). The following variables are in scope:
+  * `body` — the response body (String)
+  * `status` — the HTTP status code (int)
+  * `headers` — response headers as a `Map<String, String>`
+  * `request` — the full initiating request (String)
+  * `response` — the full response (String)
+
+  Example:
+
+  ```groovy
+  // Return the answer field, or null to skip
+  def m = (body =~ /"answer":"([^"]*)"/)
+  m ? m[0][1] : null
+  ```
+
+  Scripts are compiled once and cached; any compilation or runtime error is logged to Burp's error log and treated as "no match" so an attack is never interrupted. The script runs locally in Burp's JVM as user-provided Groovy code — only use scripts you trust.
+
+  **Script editor (Edit / Test script…).** The button opens a pop-up editor with Groovy syntax highlighting and a paste-in **Sample response** pane (or **Load response from file…** for a saved response). Two actions help you build the script against a real example:
+
+  * **Test** — parses the sample response (raw HTTP response, or plain body as a fallback) into the `body`/`status`/`headers` bindings, runs the current script, and shows the extracted value (or the error / "nothing extracted"). This is exactly the code path used at attack time.
+  * **Generate from response (AI)** — sends the sample response (plus your payload-generation prompt as context) to the configured engine and asks it to write a Groovy extraction script, which is dropped into the editor for you to review and Test.
+
+  Click **OK** to copy the script back into the Script field; **Cancel** discards changes.
+
+  **Send to extraction script (right-click).** Anywhere Burp shows a response (Proxy history, Repeater, message editors, etc.), right-click and choose **Extensions → ByteBanter → Send to extraction script**. ByteBanter switches to stateful Script mode and opens the editor with that response pre-loaded as the sample, ready to Test or to generate a script from.
+
+### ASCII Smuggling
+The **ASCII Smuggling** panel transforms the generated payload just before it reaches Intruder, hiding text in the invisible Unicode *Tags* block (U+E0000–U+E007F). The raw model output is what stays in the stateful conversation history — only the payload emitted to Intruder is transformed. The feature is **off by default**. Three modes:
+
+* **Encode entire payload:** the whole generated payload is rendered invisible.
+* **Append hidden text to payload:** the payload stays visible and a user-supplied hidden text is appended in invisible characters (classic prompt-injection carrier).
+* **Prepend hidden text to payload:** as above, but prepended.
+
+The hidden-text field is used only by the append/prepend modes. Because the output is visually empty, verify it with a decoder (e.g. the round-trip helper `AsciiSmuggler.decode`) before relying on it.
 
 ### Sensitive Data persistence
 The **"Persist API key and custom headers across sessions"** checkbox controls whether sensitive fields are written to Burp's extension data. It is **off by default**: API keys and custom headers live only in memory and must be re-entered each session. When checked, those fields are persisted to Burp's extension data file in plaintext on disk — only enable it on machines you trust. The checkbox state itself is always remembered.
@@ -108,7 +150,7 @@ The **"Persist API key and custom headers across sessions"** checkbox controls w
 After each Intruder response, the selected LLM can judge whether the attack succeeded according to a user-defined criterion. The feature is **off by default**.
 
 * Enable the checkbox in the Success Verification panel and write your success criterion in the textarea, or click **Generate from prompt!** to derive a starting criterion from your payload-generation prompt.
-* The third widget in the panel changes shape based on **Stateful Interaction** (in the Context Regex panel):
+* The third widget in the panel changes shape based on the **Stateful Interaction** panel's Enable checkbox:
   * **Stateless** (checkbox unchecked): the spinner is **"Truncate request/response (chars)"**. The verifier receives the raw HTTP request and response of the single payload being judged, capped at the configured number of characters per side. Default 4000.
   * **Stateful** (checkbox checked): the spinner becomes **"Conversation history depth (turns)"**. The verifier receives the last N `(ByteBanter payload, regex-extracted target response)` turns from the running conversation, so it can detect successes that emerge across multiple exchanges (e.g. a password reconstructed letter-by-letter). Default 1 = only the most recent turn.
   * Both values are persisted independently — toggling Stateful Interaction does not lose the value you set in the other mode.

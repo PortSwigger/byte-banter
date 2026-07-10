@@ -10,11 +10,12 @@ import burp.api.montoya.http.message.HttpHeader;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import com.anvilsecure.bytebanter.AIEngineUIs.AIEngineUI;
+import com.anvilsecure.bytebanter.AsciiSmuggler;
+import com.anvilsecure.bytebanter.ResponseScriptRunner;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 import javax.swing.JOptionPane;
-import java.util.Arrays;
 import java.util.Base64;
 import java.util.Random;
 import java.util.regex.Matcher;
@@ -185,7 +186,9 @@ public abstract class AIEngine implements HttpHandler {
     // used for other interaction with the AI (i.e.: prompt optimization)
     public String askAi(String prompt, String user_input) {
         if (!isAIEnabled()) {
-            return prompt;
+            // Signal "no result" (callers leave their field unchanged). Returning the
+            // system prompt here would clobber the caller's text with the meta-prompt.
+            return null;
         }
         JSONObject params = UI.getParams();
         JSONObject data = packData(new JSONObject(), params);
@@ -245,18 +248,66 @@ public abstract class AIEngine implements HttpHandler {
     @Override
     public ResponseReceivedAction handleHttpResponseReceived(HttpResponseReceived httpResponseReceived) {
         JSONObject params = UI.getParams();
-        if (isStateful) {
-            Matcher matcher = Pattern.compile(params.getString("regex")).matcher(httpResponseReceived.bodyToString());
-            if (matcher.find()) {
-                String rxp = params.getBoolean("b64") ? Arrays.toString(Base64.getDecoder().decode(matcher.group(1)))
-                        : matcher.group(1);
-                messages.put(new JSONObject().put("role", "user").put("content", rxp));
-            }
-        }
+        applyStatefulExtraction(httpResponseReceived, params);
         Annotations a = runVerificationIfApplicable(httpResponseReceived, params);
         return a != null
                 ? ResponseReceivedAction.continueWith(httpResponseReceived, a)
                 : ResponseReceivedAction.continueWith(httpResponseReceived);
+    }
+
+    /**
+     * Stateful "Context" extraction. In stateful mode, pulls a string out of the
+     * response (via regex capture group 1 or a user Groovy script) and appends it
+     * to the conversation as the next {@code user} turn. Shared by all engines
+     * (base OpenAI-compatible handler and {@link BurpAIEngine}) so the two
+     * response handlers stay in sync.
+     */
+    protected void applyStatefulExtraction(HttpResponseReceived r, JSONObject params) {
+        if (!isStateful) {
+            return;
+        }
+        String extracted;
+        if ("script".equals(params.optString("extract_mode", "regex"))) {
+            extracted = ResponseScriptRunner.run(params.optString("extract_script", ""), r, api);
+        } else {
+            Matcher matcher = Pattern.compile(params.getString("regex")).matcher(r.bodyToString());
+            if (matcher.find()) {
+                extracted = params.getBoolean("b64")
+                        ? new String(Base64.getDecoder().decode(matcher.group(1)))
+                        : matcher.group(1);
+            } else {
+                extracted = null;
+            }
+        }
+        if (extracted != null) {
+            messages.put(new JSONObject().put("role", "user").put("content", extracted));
+        }
+    }
+
+    /**
+     * Applies post-generation payload transforms before the payload is handed to
+     * Intruder. Currently: optional ASCII smuggling (hides text in the invisible
+     * Unicode Tags block). Applied only to the emitted payload — the raw model
+     * text is what {@link #askAi()} stored in {@code messages}, so stateful
+     * conversation history stays clean.
+     */
+    public String applyPayloadTransforms(String payload) {
+        if (payload == null) {
+            return null;
+        }
+        JSONObject p = UI.getParams();
+        if (!p.optBoolean("smuggle_enabled", false)) {
+            return payload;
+        }
+        String hidden = p.optString("smuggle_hidden_text", "");
+        switch (p.optString("smuggle_mode", "Encode entire payload")) {
+            case "Append hidden text to payload":
+                return payload + AsciiSmuggler.encode(hidden);
+            case "Prepend hidden text to payload":
+                return AsciiSmuggler.encode(hidden) + payload;
+            default:
+                return AsciiSmuggler.encode(payload);
+        }
     }
 
     /**

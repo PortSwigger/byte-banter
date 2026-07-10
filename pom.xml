@@ -28,6 +28,28 @@
         <artifactId>json</artifactId>
         <version>20250107</version>
     </dependency>
+
+    <!-- Groovy engine for the scriptable response-matching feature (Context Regex → Script mode).
+         Bundled into the uber jar by the shade plugin. Groovy 4 supports JDK 17. -->
+    <dependency>
+        <groupId>org.apache.groovy</groupId>
+        <artifactId>groovy</artifactId>
+        <version>4.0.24</version>
+    </dependency>
+
+    <!-- Syntax-highlighting Swing editor for the Groovy script pop-up. -->
+    <dependency>
+        <groupId>com.fifesoft</groupId>
+        <artifactId>rsyntaxtextarea</artifactId>
+        <version>3.5.4</version>
+    </dependency>
+
+    <dependency>
+        <groupId>org.junit.jupiter</groupId>
+        <artifactId>junit-jupiter</artifactId>
+        <version>5.10.2</version>
+        <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
@@ -52,6 +74,14 @@
               <createDependencyReducedPom>false</createDependencyReducedPom>
               <shadedArtifactAttached>true</shadedArtifactAttached>
               <shadedClassifierName>uber</shadedClassifierName>
+              <!-- Burp bundles its own RSyntaxTextArea; relocate ours so the two copies
+                   don't collide in the extension classloader (a collision breaks editor input). -->
+              <relocations>
+                <relocation>
+                  <pattern>org.fife</pattern>
+                  <shadedPattern>com.anvilsecure.bytebanter.shaded.fife</shadedPattern>
+                </relocation>
+              </relocations>
             </configuration>
           </execution>
         </executions>

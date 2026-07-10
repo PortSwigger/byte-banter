@@ -14,11 +14,6 @@ import org.json.JSONObject;
 
 import javax.swing.JOptionPane;
 
-import java.util.Arrays;
-import java.util.Base64;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-
 public class BurpAIEngine extends AIEngine {
 
     public BurpAIEngine(MontoyaApi api) {
@@ -86,7 +81,9 @@ public class BurpAIEngine extends AIEngine {
     @Override
     public String askAi(String prompt, String user_input) {
         if (!isAIEnabled()) {
-            return prompt;
+            // Signal "no result" (callers leave their field unchanged). Returning the
+            // system prompt here would clobber the caller's text with the meta-prompt.
+            return null;
         }
         JSONObject params = UI.getParams();
         JSONObject data = packData(new JSONObject(), params);
@@ -144,14 +141,7 @@ public class BurpAIEngine extends AIEngine {
     @Override
     public ResponseReceivedAction handleHttpResponseReceived(HttpResponseReceived httpResponseReceived) {
         JSONObject params = UI.getParams();
-        if (isStateful) {
-            Matcher matcher = Pattern.compile(params.getString("regex")).matcher(httpResponseReceived.bodyToString());
-            if (matcher.find()) {
-                String rxp = params.getBoolean("b64") ? Arrays.toString(Base64.getDecoder().decode(matcher.group(1)))
-                        : matcher.group(1);
-                messages.put(new JSONObject().put("role", "user").put("content", rxp));
-            }
-        }
+        applyStatefulExtraction(httpResponseReceived, params);
         Annotations a = runVerificationIfApplicable(httpResponseReceived, params);
         return a != null
                 ? ResponseReceivedAction.continueWith(httpResponseReceived, a)

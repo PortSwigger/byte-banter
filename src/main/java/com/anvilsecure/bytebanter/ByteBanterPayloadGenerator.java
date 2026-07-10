@@ -28,7 +28,7 @@ public class ByteBanterPayloadGenerator implements PayloadGenerator {
         engines.add(new OpenAIEngine(api));
         engines.add(new AnthropicAIEngine(api));
         // Claude Code (CLI) — uses the user's existing Anthropic subscription via
-        // the Claude Code agent. Spawns a local subprocess; not BApp-Store-shaped.
+        // the Claude Code agent. Spawns a local subprocess.
         engines.add(new ClaudeCodeEngine(api));
     }
 
@@ -55,7 +55,9 @@ public class ByteBanterPayloadGenerator implements PayloadGenerator {
     @Override
     public GeneratedPayload generatePayloadFor(IntruderInsertionPoint intruderInsertionPoint) {
         try {
-            String payload = engine.askAi();
+            // Post-process the model output (e.g. ASCII smuggling) before it reaches
+            // Intruder; the raw text is what askAi() kept in the conversation history.
+            String payload = engine.applyPayloadTransforms(engine.askAi());
             // Treat both null and empty/whitespace-only as end-of-generation:
             // an attack stop can leave a subprocess engine (e.g. Claude Code CLI) returning
             // an empty stdout, and Burp NPEs internally on a payload whose value is empty.
