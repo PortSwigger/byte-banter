@@ -1,0 +1,31 @@
+<p>ByteBanter is a custom Intruder payload generator that uses large language models to produce payloads from a
+  natural-language prompt. Burp AI generates payloads by default; the extension also supports Ollama, any
+  OpenAI-compatible Chat Completions endpoint, and the Anthropic Messages API.</p>
+
+<h2>Features</h2>
+<ul>
+  <li>Generates Intruder payloads on demand from a user-written prompt, removing the need for a static wordlist.</li>
+  <li>Rewrites your payload-generation prompt to be clearer and more directive while preserving the attack goal and
+    concrete details such as target names, parameter names, and regex patterns.</li>
+  <li>Optional stateful mode keeps the LLM conversation across payloads and extracts a configurable regex from each
+    target response, so subsequent payloads can adapt to what the target returned.</li>
+  <li>Optional Success Verification asks the LLM to judge each Intruder response against a user-defined criterion,
+    highlights matching rows red, and writes a summary entry to the Burp event log.</li>
+  <li>Generates a starting success criterion automatically from your payload-generation prompt.</li>
+</ul>
+
+<h2>Usage</h2>
+<ol>
+  <li>Open the ByteBanter tab and select an engine from the dropdown in the top-right corner.</li>
+  <li>Configure the engine: for Burp AI, ensure AI features are enabled in Burp settings; for the other engines, supply
+    the URL, model, and any required headers (the API key for Anthropic and any bearer token for OpenAI-compatible
+    providers go in the Headers field).</li>
+  <li>Write a prompt describing the kind of payloads to generate, or click Optimize to have the model rewrite it.</li>
+  <li>Optionally enable Stateful Interaction and supply a regex that extracts the relevant portion of each target
+    response into the conversation.</li>
+  <li>Optionally enable Success Verification and write or auto-generate a success criterion.</li>
+  <li>In Intruder, configure the target and payload positions, set the payload type to "Extension-generated", and choose
+    "ByteBanter" from the generator list.</li>
+  <li>Start the Intruder attack. ByteBanter supplies LLM-generated payloads for each request and, if "Success
+    Verification" is enabled, flags responses that match the criterion.</li>
+</ol>
