@@ -34,7 +34,10 @@
     <dependency>
         <groupId>org.apache.groovy</groupId>
         <artifactId>groovy</artifactId>
-        <version>4.0.24</version>
+        <!-- 4.0.32+ bundles an ASM new enough to read Java 25/26 (class-file major 69/70)
+             classfiles; older Groovy fails script compilation with "Unsupported class file
+             major version" on recent JDKs (e.g. the JRE bundled with current Burp). -->
+        <version>4.0.32</version>
     </dependency>
 
     <!-- Syntax-highlighting Swing editor for the Groovy script pop-up. -->

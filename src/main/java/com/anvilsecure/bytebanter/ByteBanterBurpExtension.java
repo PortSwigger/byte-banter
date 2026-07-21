@@ -371,6 +371,10 @@ public class ByteBanterBurpExtension implements BurpExtension, ExtensionUnloadin
         settings.put("engineIndex", selectedEngineIndex);
         api.persistence().extensionData().setString("ExtensionSettings", settings.toString());
         api.persistence().extensionData().setString("SettingsVersion", Float.toString(settingsVersion++));
+
+        // Release long-lived resources so an extension reload does not leak them:
+        // the Groovy classloader hierarchy + compiled-class cache.
+        ResponseScriptRunner.shutdown();
     }
 
     private void loadSettings() {

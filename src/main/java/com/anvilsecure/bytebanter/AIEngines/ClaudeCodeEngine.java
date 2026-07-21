@@ -111,7 +111,7 @@ public class ClaudeCodeEngine extends AIEngine {
 
             if (!p.waitFor(PROCESS_TIMEOUT_SEC, TimeUnit.SECONDS)) {
                 p.destroyForcibly();
-                JOptionPane.showMessageDialog(null,
+                JOptionPane.showMessageDialog(dialogParent(),
                         "ByteBanter: Claude Code timed out after " + PROCESS_TIMEOUT_SEC + "s.",
                         "ByteBanter Error", JOptionPane.ERROR_MESSAGE);
                 return null;
@@ -119,7 +119,7 @@ public class ClaudeCodeEngine extends AIEngine {
 
             if (p.exitValue() != 0) {
                 String err = new String(stderrBytes, StandardCharsets.UTF_8).trim();
-                JOptionPane.showMessageDialog(null,
+                JOptionPane.showMessageDialog(dialogParent(),
                         "ByteBanter: Claude Code exited with code " + p.exitValue()
                                 + (err.isEmpty() ? "" : ":\n" + err),
                         "ByteBanter Error", JOptionPane.ERROR_MESSAGE);
@@ -128,7 +128,7 @@ public class ClaudeCodeEngine extends AIEngine {
 
             return new String(stdoutBytes, StandardCharsets.UTF_8).trim();
         } catch (java.io.IOException e) {
-            JOptionPane.showMessageDialog(null,
+            JOptionPane.showMessageDialog(dialogParent(),
                     "ByteBanter: failed to launch '" + binPath + "'. Is the Claude Code CLI installed and on PATH?\n"
                             + e.getMessage(),
                     "ByteBanter Error", JOptionPane.ERROR_MESSAGE);

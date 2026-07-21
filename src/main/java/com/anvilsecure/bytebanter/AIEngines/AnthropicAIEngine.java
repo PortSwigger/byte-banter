@@ -49,7 +49,7 @@ public class AnthropicAIEngine extends AIEngine {
         // Custom URLs (proxies, mocks, gateways) may not require it.
         if (url.toLowerCase().contains(DEFAULT_ANTHROPIC_HOST)
                 && !userHeaders.toLowerCase().contains("x-api-key")) {
-            JOptionPane.showMessageDialog(null,
+            JOptionPane.showMessageDialog(dialogParent(),
                     "ByteBanter: Anthropic requires an x-api-key header. Add it in the Headers field as:\n"
                             + "x-api-key: YOUR_ANTHROPIC_API_KEY",
                     "ByteBanter Error", JOptionPane.ERROR_MESSAGE);
@@ -88,7 +88,7 @@ public class AnthropicAIEngine extends AIEngine {
 
         JSONObject body = new JSONObject(response.response().bodyToString());
         if (!body.has("content")) {
-            JOptionPane.showMessageDialog(null,
+            JOptionPane.showMessageDialog(dialogParent(),
                     "ByteBanter: Unexpected response from Anthropic API:\n" + body.toString(),
                     "ByteBanter Error", JOptionPane.ERROR_MESSAGE);
             return null;

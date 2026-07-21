@@ -87,29 +87,36 @@ public class OllamaAIEngineUI extends AIEngineUI {
     }
 
     private void loadModels(DocumentEvent e) {
-        String url = urlField.getText() + "api/tags";
-        String headers = headersField.getText();
         MontoyaApi api = this.model.getApi();
-        HttpRequestResponse response;
+        // Runs on a raw background thread fired from a DocumentListener, so any exception
+        // (unreachable endpoint, non-JSON body, missing "models") would otherwise escape to
+        // the JVM's default uncaught-exception handler with no user feedback. Surface it in
+        // Burp's Errors tab instead.
+        try {
+            String url = urlField.getText() + "api/tags";
+            String headers = headersField.getText();
 
-        HttpRequest request = HttpRequest.httpRequestFromUrl(url);
-        request = request.withMethod("GET");
-        if (!headers.isEmpty()) {
-            HttpHeader httpHeader = HttpHeader.httpHeader(headers);
-            request = request.withAddedHeader(httpHeader);
-        }
-        HttpRequest finalRequest = request;
-        // BApp Store requirement: enforce upstream TLS verification on third-party LLM calls.
-        RequestOptions options = RequestOptions.requestOptions().withUpstreamTLSVerification();
-        response = api.http().sendRequest(finalRequest, options);
-
-        if (response.response().statusCode() == 200) {
-            JSONObject body = new JSONObject(response.response().body().toString());
-            JSONArray models = body.getJSONArray("models");
-            modelCombo.removeAllItems();
-            for (int i = 0; i < models.length(); i++) {
-                modelCombo.addItem(models.getJSONObject(i).getString("name"));
+            HttpRequest request = HttpRequest.httpRequestFromUrl(url);
+            request = request.withMethod("GET");
+            if (!headers.isEmpty()) {
+                HttpHeader httpHeader = HttpHeader.httpHeader(headers);
+                request = request.withAddedHeader(httpHeader);
             }
+            HttpRequest finalRequest = request;
+            // BApp Store requirement: enforce upstream TLS verification on third-party LLM calls.
+            RequestOptions options = RequestOptions.requestOptions().withUpstreamTLSVerification();
+            HttpRequestResponse response = api.http().sendRequest(finalRequest, options);
+
+            if (response.response().statusCode() == 200) {
+                JSONObject body = new JSONObject(response.response().body().toString());
+                JSONArray models = body.getJSONArray("models");
+                modelCombo.removeAllItems();
+                for (int i = 0; i < models.length(); i++) {
+                    modelCombo.addItem(models.getJSONObject(i).getString("name"));
+                }
+            }
+        } catch (Exception ex) {
+            api.logging().logToError("[ByteBanter] Failed to load Ollama models: " + ex.getMessage());
         }
     }
 }
