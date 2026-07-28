@@ -12,10 +12,10 @@
   <li>Optional Success Verification asks the LLM to judge each Intruder response against a user-defined criterion,
     highlights matching rows red, and writes a summary entry to the Burp event log.</li>
   <li>Generates a starting success criterion automatically from your payload-generation prompt.</li>
-  <li>ASCII Smuggling: optionally hide text inside the invisible Unicode Tags block (U+E0000–U+E007F) so generated 
+  <li>ASCII Smuggling: optionally hide text inside the invisible Unicode Tags block (U+E0000-U+E007F) so generated 
     payloads carry instructions that are invisible in most UIs yet decoded by many downstream LLMs.</li>
   <li>Scriptable Response Matching: the Stateful Interaction feature has a Script mode where a small Groovy script 
-    extracts the portion of each response fed back into a stateful conversation instead of a regular expression.</li>
+    extracts the portion of each response fed back into a stateful conversation, instead of a regular expression.</li>
 </ul>
 
 <h2>Usage</h2>
