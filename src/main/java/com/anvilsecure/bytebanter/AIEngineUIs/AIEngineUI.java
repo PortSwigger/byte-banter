@@ -13,7 +13,18 @@ public abstract class AIEngineUI {
     private JCheckBox statefulCheck;
     private JTextField regexField;
     private JCheckBox b64Check;
+    // Context extraction mode: "Regex" (regexField + b64Check) or "Script (Groovy)" (extractScriptField).
+    private JComboBox<String> extractModeCombo;
+    private JTextArea extractScriptField;
     private JTextArea promptField;
+
+    // ASCII smuggling (hide text in the invisible Unicode Tags block).
+    protected JCheckBox smuggleEnabledCheck;
+    protected JComboBox<String> smuggleModeCombo;
+    protected JTextArea smuggleHiddenText;
+
+    // Last sample response used in the script editor, remembered across pop-up opens this session.
+    private String lastSampleResponse = "";
     protected AIEngine model;
     protected JTextField urlField;
     protected JTextArea headersField;
@@ -30,6 +41,12 @@ public abstract class AIEngineUI {
     protected JTextArea verifyCriterionField;
     protected JSpinner verifyHistoryDepthSpinner;     // shown in stateful mode
     protected JSpinner verifyTruncateCharsSpinner;    // shown in stateless mode
+
+    private static final String DEFAULT_EXTRACT_SCRIPT =
+            "// Available: body, status, headers, request, response\n"
+                    + "// Return the string to feed back to the AI, or null to skip this response.\n"
+                    + "def m = (body =~ /\"answer\":\"([^\"]*)\"/)\n"
+                    + "m ? m[0][1] : null";
 
     private static final String VERIFY_DEFAULT_CRITERION =
             "The HTTP response body contains tokens that look like leaked secrets "
@@ -97,15 +114,163 @@ public abstract class AIEngineUI {
     }
 
     public JPanel getStatePanel() {
-        JPanel statePanel = new JPanel(new GridLayout(3, 1));
-        statefulCheck = new JCheckBox("Stateful Interaction", false);
+        JPanel statePanel = new JPanel(new GridBagLayout());
+
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.insets = new Insets(2, 2, 2, 2);
+        gbc.gridx = 0;
+        gbc.gridy = 0;
+        gbc.weightx = 1.0;
+        gbc.gridwidth = 2;
+
+        statefulCheck = new JCheckBox("Enable", false);
+        statePanel.add(statefulCheck, gbc);
+
+        // Extraction mode selector: Regex (original behaviour) vs Groovy script.
+        extractModeCombo = new JComboBox<>(new String[] { "Regex", "Script (Groovy)" });
+        JPanel modeRow = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        modeRow.add(new JLabel("Extraction mode:"));
+        modeRow.add(extractModeCombo);
+        gbc.gridy = 1;
+        statePanel.add(modeRow, gbc);
+
+        // Small card: regex field + base64 checkbox.
+        JPanel regexCard = new JPanel(new GridLayout(2, 1));
         regexField = new JTextField("^\\{.*\\\"answer\\\":\\\"(.*)\\\",\\\"defender\\\".*\\}$");
         b64Check = new JCheckBox("Base64 decoding", false);
-        statePanel.add(statefulCheck);
-        statePanel.add(regexField);
-        statePanel.add(b64Check);
+        regexCard.add(regexField);
+        regexCard.add(b64Check);
+
+        // Tall card: highlighted Groovy preview + editor button.
+        JPanel scriptCard = new JPanel(new BorderLayout());
+        JLabel scriptHelp = new JLabel(
+                "Variables: body, status, headers, request, response — "
+                        + "return the extracted String, or null to skip.");
+        ScriptEditorDialog.GroovyEditor scriptEd = ScriptEditorDialog.newGroovyEditor(6, 40);
+        extractScriptField = scriptEd.area;
+        extractScriptField.setText(DEFAULT_EXTRACT_SCRIPT);
+        JComponent scriptScroll = scriptEd.scroll;
+        scriptScroll.setPreferredSize(new Dimension(400, 140));
+        JButton editScriptButton = new JButton("Edit / Test script...");
+        editScriptButton.addActionListener(e -> openScriptEditor());
+        JPanel scriptButtonRow = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        scriptButtonRow.add(editScriptButton);
+        scriptCard.add(scriptHelp, BorderLayout.NORTH);
+        scriptCard.add(scriptScroll, BorderLayout.CENTER);
+        scriptCard.add(scriptButtonRow, BorderLayout.SOUTH);
+
+        // Manual swap (not CardLayout) so the panel shrinks to the regex card's small
+        // height instead of always reserving the tall script editor's footprint.
+        final JPanel cardHolder = new JPanel(new BorderLayout());
+        gbc.gridy = 2;
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.weighty = 0.0;
+        statePanel.add(cardHolder, gbc);
+
+        Runnable showSelectedCard = () -> {
+            cardHolder.removeAll();
+            cardHolder.add(extractModeCombo.getSelectedIndex() == 1 ? scriptCard : regexCard, BorderLayout.CENTER);
+            cardHolder.revalidate();
+            cardHolder.repaint();
+        };
+        // Fires on both user clicks and programmatic setSelectedIndex (e.g. loadParams).
+        extractModeCombo.addActionListener(e -> showSelectedCard.run());
+        showSelectedCard.run();
 
         return statePanel;
+    }
+
+    /** Opens the syntax-highlighted pop-up editor and copies the result back on OK. */
+    private void openScriptEditor() {
+        showScriptEditor(null);
+    }
+
+    /**
+     * Entry point for the "Send to extraction script" context-menu action: switches
+     * the panel into stateful Script mode and opens the editor with the given response
+     * pre-loaded as the sample to test/generate against.
+     */
+    public void openScriptEditorWithResponse(String response) {
+        if (statefulCheck != null) {
+            statefulCheck.setSelected(true);
+        }
+        if (extractModeCombo != null) {
+            extractModeCombo.setSelectedIndex(1); // Script (Groovy)
+        }
+        showScriptEditor(response);
+    }
+
+    private void showScriptEditor(String initialResponse) {
+        Window owner = SwingUtilities.getWindowAncestor(extractScriptField);
+        String goal = (promptField != null) ? promptField.getText() : "";
+        // Seed with the passed-in response (e.g. from the context menu), otherwise reuse the
+        // last sample so pasted/loaded/sent responses survive across editor opens this session.
+        String seed = (initialResponse != null && !initialResponse.isEmpty())
+                ? initialResponse : lastSampleResponse;
+        ScriptEditorDialog dialog =
+                new ScriptEditorDialog(owner, extractScriptField.getText(), model, goal, seed);
+        dialog.setVisible(true);
+        lastSampleResponse = dialog.getSampleResponse();
+        if (dialog.isConfirmed()) {
+            extractScriptField.setText(dialog.getScript());
+        }
+    }
+
+    /**
+     * ASCII smuggling panel. When enabled, the generated payload is transformed
+     * before it reaches Intruder (see {@code AIEngine.applyPayloadTransforms}):
+     * either the whole payload is rendered invisible, or a user-supplied hidden
+     * text is appended/prepended to the visible payload.
+     */
+    public JPanel getSmugglePanel() {
+        JPanel panel = new JPanel(new GridBagLayout());
+
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.insets = new Insets(2, 2, 2, 2);
+        gbc.gridx = 0;
+        gbc.gridy = 0;
+        gbc.weightx = 1.0;
+        gbc.gridwidth = 2;
+
+        smuggleEnabledCheck = new JCheckBox("Hide text in invisible Unicode Tags (U+E0000 block)", false);
+        panel.add(smuggleEnabledCheck, gbc);
+
+        smuggleModeCombo = new JComboBox<>(new String[] {
+                "Encode entire payload",
+                "Append hidden text to payload",
+                "Prepend hidden text to payload" });
+        JPanel modeRow = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        modeRow.add(new JLabel("Mode:"));
+        modeRow.add(smuggleModeCombo);
+        gbc.gridy = 1;
+        panel.add(modeRow, gbc);
+
+        smuggleHiddenText = new JTextArea("", 3, 40);
+        smuggleHiddenText.setLineWrap(true);
+        smuggleHiddenText.setWrapStyleWord(true);
+        JScrollPane sp = new JScrollPane(smuggleHiddenText);
+        sp.setPreferredSize(new Dimension(400, 70));
+        sp.setBorder(new TitledBorder("Hidden text (used by append/prepend modes):"));
+        gbc.gridy = 2;
+        gbc.fill = GridBagConstraints.BOTH;
+        gbc.weighty = 1.0;
+        panel.add(sp, gbc);
+
+        smuggleEnabledCheck.addActionListener(e -> syncSmuggleEnabled());
+        smuggleModeCombo.addActionListener(e -> syncSmuggleEnabled());
+        syncSmuggleEnabled();
+
+        return panel;
+    }
+
+    /** Enables the mode/hidden-text widgets only when smuggling is on and the mode needs hidden text. */
+    private void syncSmuggleEnabled() {
+        boolean on = smuggleEnabledCheck.isSelected();
+        smuggleModeCombo.setEnabled(on);
+        // "Encode entire payload" (index 0) does not use the hidden-text field.
+        smuggleHiddenText.setEnabled(on && smuggleModeCombo.getSelectedIndex() != 0);
     }
 
     public JPanel getVerificationPanel() {
@@ -317,6 +482,21 @@ public abstract class AIEngineUI {
         params.put("regex", regexField.getText());
         params.put("b64", b64Check.isSelected());
 
+        // Context extraction mode + Groovy script (variant of the regex extraction).
+        if (extractModeCombo != null) {
+            params.put("extract_mode", extractModeCombo.getSelectedIndex() == 1 ? "script" : "regex");
+        }
+        if (extractScriptField != null) {
+            params.put("extract_script", extractScriptField.getText());
+        }
+
+        // ASCII smuggling
+        if (smuggleEnabledCheck != null) {
+            params.put("smuggle_enabled", smuggleEnabledCheck.isSelected());
+            params.put("smuggle_mode", (String) smuggleModeCombo.getSelectedItem());
+            params.put("smuggle_hidden_text", smuggleHiddenText.getText());
+        }
+
         // New Request Limit params
         if (infiniteRequestCheck != null) {
             params.put("isInfiniteRequests", infiniteRequestCheck.isSelected());
@@ -380,6 +560,22 @@ public abstract class AIEngineUI {
         statefulCheck.setSelected(params.getBoolean("stateful"));
         regexField.setText(params.getString("regex"));
         b64Check.setSelected(params.getBoolean("b64"));
+
+        if (extractModeCombo != null) {
+            // Firing setSelectedIndex re-shows the matching card via the ActionListener.
+            extractModeCombo.setSelectedIndex(
+                    "script".equals(params.optString("extract_mode", "regex")) ? 1 : 0);
+        }
+        if (extractScriptField != null) {
+            extractScriptField.setText(params.optString("extract_script", DEFAULT_EXTRACT_SCRIPT));
+        }
+
+        if (smuggleEnabledCheck != null) {
+            smuggleEnabledCheck.setSelected(params.optBoolean("smuggle_enabled", false));
+            smuggleModeCombo.setSelectedItem(params.optString("smuggle_mode", "Encode entire payload"));
+            smuggleHiddenText.setText(params.optString("smuggle_hidden_text", ""));
+            syncSmuggleEnabled();
+        }
 
         if (infiniteRequestCheck != null) {
             infiniteRequestCheck.setSelected(params.optBoolean("isInfiniteRequests", false));

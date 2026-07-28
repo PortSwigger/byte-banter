@@ -5,9 +5,13 @@ import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.BurpExtension;
 import burp.api.montoya.core.Registration;
 import burp.api.montoya.extension.ExtensionUnloadingHandler;
+import burp.api.montoya.http.message.HttpRequestResponse;
+import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.intruder.AttackConfiguration;
 import burp.api.montoya.intruder.PayloadGenerator;
 import burp.api.montoya.intruder.PayloadGeneratorProvider;
+import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
+import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
 import com.anvilsecure.bytebanter.AIEngineUIs.AIEngineUI;
 import com.anvilsecure.bytebanter.AIEngines.AIEngine;
 import org.json.JSONException;
@@ -19,6 +23,8 @@ import java.awt.*;
 import java.awt.event.ItemEvent;
 import java.awt.event.ItemListener;
 import java.net.URL;
+import java.util.Collections;
+import java.util.List;
 import java.util.Set;
 import javax.swing.SwingWorker;
 
@@ -79,6 +85,7 @@ public class ByteBanterBurpExtension implements BurpExtension, ExtensionUnloadin
     private JPanel paramPanel;
     private JPanel statePanel;
     private JPanel verifyPanel;
+    private JPanel smugglePanel;
     private JPanel promptPanel;
     private JPanel mainPanel;
 
@@ -87,11 +94,75 @@ public class ByteBanterBurpExtension implements BurpExtension, ExtensionUnloadin
         this.api = api;
         payloadGenerator = new ByteBanterPayloadGenerator(api);
         api.extension().setName(EXTENSION_NAME);
-        api.userInterface().registerSuiteTab(EXTENSION_SHORT_NAME, createMainPanel());
+
+        // Build the Swing UI on the EDT. Montoya calls initialize() on an extension-loader
+        // thread, and the Groovy editors (RSyntaxTextArea) must be constructed on the EDT so
+        // their keyboard maps install correctly (see ScriptEditorDialog.newGroovyArea).
+        final JPanel[] holder = new JPanel[1];
+        runOnEdt(() -> holder[0] = createMainPanel());
+        api.userInterface().registerSuiteTab(EXTENSION_SHORT_NAME, holder[0]);
         api.logging().logToOutput("Extension loaded: " + EXTENSION_NAME);
-        loadSettings();
+        // loadSettings() -> setPayloadGenerator() -> getStatePanel() also builds RSyntaxTextAreas.
+        runOnEdt(this::loadSettings);
+
         api.intruder().registerPayloadGeneratorProvider(this);
+        api.userInterface().registerContextMenuItemsProvider(new SendToScriptContextMenu());
         api.extension().registerUnloadingHandler(this);
+    }
+
+    /** Runs {@code r} synchronously on the EDT (or inline if already on it). */
+    private static void runOnEdt(Runnable r) {
+        if (SwingUtilities.isEventDispatchThread()) {
+            r.run();
+            return;
+        }
+        try {
+            SwingUtilities.invokeAndWait(r);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException(e);
+        } catch (java.lang.reflect.InvocationTargetException e) {
+            Throwable cause = e.getCause();
+            throw new RuntimeException(cause == null ? e : cause);
+        }
+    }
+
+    /**
+     * Adds an "Extensions → ByteBanter → Send to extraction script" item to Burp's
+     * context menu wherever a response is visible (Proxy history, Repeater, message
+     * editors, ...). Clicking it opens the ByteBanter script editor for the currently
+     * selected engine, pre-loaded with that response as the sample to test/generate against.
+     */
+    private class SendToScriptContextMenu implements ContextMenuItemsProvider {
+        @Override
+        public List<Component> provideMenuItems(ContextMenuEvent event) {
+            HttpResponse response = responseFrom(event);
+            if (response == null) {
+                return Collections.emptyList();
+            }
+            JMenuItem item = new JMenuItem("Send to extraction script");
+            item.addActionListener(e -> {
+                String raw = response.toString();
+                SwingUtilities.invokeLater(
+                        () -> payloadGenerator.getEngine().getUI().openScriptEditorWithResponse(raw));
+            });
+            return List.of(item);
+        }
+
+        private HttpResponse responseFrom(ContextMenuEvent event) {
+            if (event.messageEditorRequestResponse().isPresent()) {
+                HttpRequestResponse rr = event.messageEditorRequestResponse().get().requestResponse();
+                if (rr != null && rr.hasResponse()) {
+                    return rr.response();
+                }
+            }
+            for (HttpRequestResponse rr : event.selectedRequestResponses()) {
+                if (rr.hasResponse()) {
+                    return rr.response();
+                }
+            }
+            return null;
+        }
     }
 
     @Override
@@ -148,6 +219,9 @@ public class ByteBanterBurpExtension implements BurpExtension, ExtensionUnloadin
 
         // Verification panel
         verifyPanel = payloadGenerator.getEngine().getUI().getVerificationPanel();
+
+        // ASCII smuggling panel
+        smugglePanel = payloadGenerator.getEngine().getUI().getSmugglePanel();
 
         // Prompt panel
         promptPanel = payloadGenerator.getEngine().getUI().getPromptPanel(default_prompt);
@@ -209,11 +283,15 @@ public class ByteBanterBurpExtension implements BurpExtension, ExtensionUnloadin
         if (verifyPanel != null) {
             configPanel.remove(verifyPanel);
         }
+        if (smugglePanel != null) {
+            configPanel.remove(smugglePanel);
+        }
         mainPanel.remove(promptPanel);
         URLPanel = UI.getAIConfPanel();
         paramPanel = UI.getParamPanel();
         statePanel = UI.getStatePanel();
         verifyPanel = UI.getVerificationPanel();
+        smugglePanel = UI.getSmugglePanel();
         promptPanel = UI.getPromptPanel(default_prompt);
         addOptimizeButton();
         addGenerateVerifyPromptButton();
@@ -247,12 +325,18 @@ public class ByteBanterBurpExtension implements BurpExtension, ExtensionUnloadin
                 GridBagConstraints.PAGE_START, GridBagConstraints.HORIZONTAL, new Insets(0, 0, 0, 0), 0, 0));
 
         // State
-        statePanel.setBorder(new TitledBorder("Context Regex:"));
+        statePanel.setBorder(new TitledBorder("Stateful Interaction:"));
         configPanel.add(statePanel, new GridBagConstraints(0, 4, 2, 1, 1.00, 1.00,
                 GridBagConstraints.PAGE_START, GridBagConstraints.HORIZONTAL, new Insets(0, 0, 0, 0), 0, 0));
         // Success Verification
         if (verifyPanel != null) {
             configPanel.add(verifyPanel, new GridBagConstraints(0, 5, 2, 1, 1.00, 1.00,
+                    GridBagConstraints.PAGE_START, GridBagConstraints.HORIZONTAL, new Insets(0, 0, 0, 0), 0, 0));
+        }
+        // ASCII Smuggling
+        if (smugglePanel != null) {
+            smugglePanel.setBorder(new TitledBorder("ASCII Smuggling:"));
+            configPanel.add(smugglePanel, new GridBagConstraints(0, 6, 2, 1, 1.00, 1.00,
                     GridBagConstraints.PAGE_START, GridBagConstraints.HORIZONTAL, new Insets(0, 0, 0, 0), 0, 0));
         }
         // Prompt
@@ -287,6 +371,10 @@ public class ByteBanterBurpExtension implements BurpExtension, ExtensionUnloadin
         settings.put("engineIndex", selectedEngineIndex);
         api.persistence().extensionData().setString("ExtensionSettings", settings.toString());
         api.persistence().extensionData().setString("SettingsVersion", Float.toString(settingsVersion++));
+
+        // Release long-lived resources so an extension reload does not leak them:
+        // the Groovy classloader hierarchy + compiled-class cache.
+        ResponseScriptRunner.shutdown();
     }
 
     private void loadSettings() {

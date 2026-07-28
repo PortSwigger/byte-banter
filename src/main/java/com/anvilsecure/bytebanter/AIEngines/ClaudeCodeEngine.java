@@ -56,7 +56,9 @@ public class ClaudeCodeEngine extends AIEngine {
         String model = params.optString("model", "").trim();
 
         // Convert messages[] into:
-        //   - systemPrompt (concatenated, passed via --append-system-prompt)
+        //   - systemPrompt (concatenated, passed via --system-prompt to REPLACE Claude
+        //     Code's default coding-agent system prompt, so the engine behaves as a pure
+        //     generator instead of inheriting the agent persona / tone)
         //   - turnsText    (user/assistant turns, piped via stdin)
         JSONArray msgs = data.getJSONArray("messages");
         StringBuilder systemPromptB = new StringBuilder();
@@ -85,8 +87,13 @@ public class ClaudeCodeEngine extends AIEngine {
             cmd.add("--model");
             cmd.add(model);
         }
+        // Drop Claude Code's per-machine dynamic sections (cwd, env, git, memory) so the
+        // model isn't nudged into "coding assistant" behaviour.
+        cmd.add("--exclude-dynamic-system-prompt-sections");
         if (systemPromptB.length() > 0) {
-            cmd.add("--append-system-prompt");
+            // --system-prompt REPLACES the default prompt (unlike --append-system-prompt,
+            // which leaves the coding-agent persona in place and causes verbose refusals).
+            cmd.add("--system-prompt");
             cmd.add(systemPromptB.toString());
         }
 
@@ -104,7 +111,7 @@ public class ClaudeCodeEngine extends AIEngine {
 
             if (!p.waitFor(PROCESS_TIMEOUT_SEC, TimeUnit.SECONDS)) {
                 p.destroyForcibly();
-                JOptionPane.showMessageDialog(null,
+                JOptionPane.showMessageDialog(dialogParent(),
                         "ByteBanter: Claude Code timed out after " + PROCESS_TIMEOUT_SEC + "s.",
                         "ByteBanter Error", JOptionPane.ERROR_MESSAGE);
                 return null;
@@ -112,7 +119,7 @@ public class ClaudeCodeEngine extends AIEngine {
 
             if (p.exitValue() != 0) {
                 String err = new String(stderrBytes, StandardCharsets.UTF_8).trim();
-                JOptionPane.showMessageDialog(null,
+                JOptionPane.showMessageDialog(dialogParent(),
                         "ByteBanter: Claude Code exited with code " + p.exitValue()
                                 + (err.isEmpty() ? "" : ":\n" + err),
                         "ByteBanter Error", JOptionPane.ERROR_MESSAGE);
@@ -121,7 +128,7 @@ public class ClaudeCodeEngine extends AIEngine {
 
             return new String(stdoutBytes, StandardCharsets.UTF_8).trim();
         } catch (java.io.IOException e) {
-            JOptionPane.showMessageDialog(null,
+            JOptionPane.showMessageDialog(dialogParent(),
                     "ByteBanter: failed to launch '" + binPath + "'. Is the Claude Code CLI installed and on PATH?\n"
                             + e.getMessage(),
                     "ByteBanter Error", JOptionPane.ERROR_MESSAGE);

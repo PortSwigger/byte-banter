@@ -5,19 +5,11 @@ import burp.api.montoya.ai.chat.Message;
 import burp.api.montoya.ai.chat.PromptException;
 import burp.api.montoya.ai.chat.PromptOptions;
 import burp.api.montoya.ai.chat.PromptResponse;
-import burp.api.montoya.core.Annotations;
-import burp.api.montoya.http.handler.HttpResponseReceived;
-import burp.api.montoya.http.handler.ResponseReceivedAction;
 import com.anvilsecure.bytebanter.AIEngineUIs.BurpAIEngineUI;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 import javax.swing.JOptionPane;
-
-import java.util.Arrays;
-import java.util.Base64;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 public class BurpAIEngine extends AIEngine {
 
@@ -48,33 +40,41 @@ public class BurpAIEngine extends AIEngine {
         if (isInfiniteRequests || counter < this.requestsLimit) {
             counter++;
 
-            // reset messages on "stateful" change or prompt change
-            boolean settingsChanged = (isStateful != params.getBoolean("stateful"))
-                    || !lastUsedPrompt.equals(params.getString("prompt"));
+            // See AIEngine.askAi: mutate/reseed 'messages' under convLock and send a defensive
+            // copy so a concurrent HTTP-handler thread cannot corrupt the conversation array.
+            synchronized (convLock) {
+                // reset messages on "stateful" change or prompt change
+                boolean settingsChanged = (isStateful != params.getBoolean("stateful"))
+                        || !lastUsedPrompt.equals(params.getString("prompt"));
 
-            isStateful = params.getBoolean("stateful");
-            lastUsedPrompt = params.getString("prompt");
+                isStateful = params.getBoolean("stateful");
+                lastUsedPrompt = params.getString("prompt");
 
-            // Reset if settings changed OR we are in stateless mode (fresh request every time)
-            if (settingsChanged || !isStateful) {
-                messages = new JSONArray();
-                messages.put(new JSONObject().put("role", "system").put("content", lastUsedPrompt));
-            }
+                // Reset if settings changed OR we are in stateless mode (fresh request every time)
+                if (settingsChanged || !isStateful) {
+                    messages = new JSONArray();
+                    messages.put(new JSONObject().put("role", "system").put("content", lastUsedPrompt));
+                }
 
-            // If stateless, always add the default trigger message
-            if (!isStateful) {
-                messages.put(new JSONObject().put("role", "user").put("content", DEFAULT_MESSAGE));
-            } else {
-                // In stateful mode, if we just reset (have [System]), add the trigger.
-                // Otherwise, 'messages' already contains history.
-                if (messages.length() == 1) {
+                // If stateless, always add the default trigger message
+                if (!isStateful) {
                     messages.put(new JSONObject().put("role", "user").put("content", DEFAULT_MESSAGE));
+                } else {
+                    // In stateful mode, if we just reset (have [System]), add the trigger.
+                    // Otherwise, 'messages' already contains history.
+                    if (messages.length() == 1) {
+                        messages.put(new JSONObject().put("role", "user").put("content", DEFAULT_MESSAGE));
+                    }
+                }
+                data.remove("messages");
+                data.put("messages", new JSONArray(messages.toString()));
+            }
+            String responseMessage = sendRequestToAI(data, params);
+            if (responseMessage != null) {
+                synchronized (convLock) {
+                    messages.put(new JSONObject().put("role", "assistant").put("content", responseMessage));
                 }
             }
-            data.remove("messages");
-            data.put("messages", messages);
-            String responseMessage = sendRequestToAI(data, params);
-            messages.put(new JSONObject().put("role", "assistant").put("content", responseMessage));
             return responseMessage;
         } else {
             counter = 0;
@@ -86,7 +86,9 @@ public class BurpAIEngine extends AIEngine {
     @Override
     public String askAi(String prompt, String user_input) {
         if (!isAIEnabled()) {
-            return prompt;
+            // Signal "no result" (callers leave their field unchanged). Returning the
+            // system prompt here would clobber the caller's text with the meta-prompt.
+            return null;
         }
         JSONObject params = UI.getParams();
         JSONObject data = packData(new JSONObject(), params);
@@ -132,7 +134,8 @@ public class BurpAIEngine extends AIEngine {
             PromptResponse response = api.ai().prompt().execute(options, context);
             return response.content();
         } catch (PromptException e) {
-            JOptionPane.showMessageDialog(null, "An error occurred while processing the prompt: " + e.getMessage() +
+            JOptionPane.showMessageDialog(dialogParent(),
+                    "An error occurred while processing the prompt: " + e.getMessage() +
                     "\nUnable to retrieve AI response. Please try again later. " +
                     "\n(Mostly this error could be related to BurpAI disabled or AI credit exhausted)",
                     "ByteBanter Error", JOptionPane.ERROR_MESSAGE);
@@ -141,21 +144,7 @@ public class BurpAIEngine extends AIEngine {
         }
     }
 
-    @Override
-    public ResponseReceivedAction handleHttpResponseReceived(HttpResponseReceived httpResponseReceived) {
-        JSONObject params = UI.getParams();
-        if (isStateful) {
-            Matcher matcher = Pattern.compile(params.getString("regex")).matcher(httpResponseReceived.bodyToString());
-            if (matcher.find()) {
-                String rxp = params.getBoolean("b64") ? Arrays.toString(Base64.getDecoder().decode(matcher.group(1)))
-                        : matcher.group(1);
-                messages.put(new JSONObject().put("role", "user").put("content", rxp));
-            }
-        }
-        Annotations a = runVerificationIfApplicable(httpResponseReceived, params);
-        return a != null
-                ? ResponseReceivedAction.continueWith(httpResponseReceived, a)
-                : ResponseReceivedAction.continueWith(httpResponseReceived);
-    }
+    // handleHttpResponseReceived is inherited from AIEngine (identical behaviour, and now
+    // schedules verification asynchronously). No engine-specific override needed.
 
 }

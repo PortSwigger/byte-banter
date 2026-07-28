@@ -10,11 +10,12 @@ import burp.api.montoya.http.message.HttpHeader;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import com.anvilsecure.bytebanter.AIEngineUIs.AIEngineUI;
+import com.anvilsecure.bytebanter.AsciiSmuggler;
+import com.anvilsecure.bytebanter.ResponseScriptRunner;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 import javax.swing.JOptionPane;
-import java.util.Arrays;
 import java.util.Base64;
 import java.util.Random;
 import java.util.regex.Matcher;
@@ -25,17 +26,28 @@ public abstract class AIEngine implements HttpHandler {
     protected final MontoyaApi api;
     protected static final String DEFAULT_MESSAGE = "Generate a new payload";
     protected AIEngineUI UI;
+    // Conversation state (messages) plus the scalar flags below are touched by both
+    // Burp's HTTP handler thread (applyStatefulExtraction/verification) and the Intruder
+    // payload-generation thread (askAi/resetConversation). All structural access to
+    // 'messages' is guarded by convLock; the scalars are volatile for visibility.
+    protected final Object convLock = new Object();
     protected JSONArray messages;
-    protected Boolean isStateful = false;
+    protected volatile boolean isStateful = false;
     // Cache of the last user-prompt seen by askAi(). NOT the user's prompt:
     // the source of truth is the UI textarea (params.getString("prompt")).
     // Used only for change-detection so we know when to reseed the conversation.
-    protected String lastUsedPrompt = "";
+    protected volatile String lastUsedPrompt = "";
 
-    protected int counter = 0;
+    protected volatile int counter = 0;
     protected int requestsLimit = 1;
     protected boolean isInfiniteRequests = false;
     protected boolean oldInfiniteFlag = false;
+
+    // Compiled-regex cache for stateful "Context Regex" extraction, so the pattern is
+    // recompiled only when the configured regex string changes, not on every response.
+    // Guarded by convLock (only touched from applyStatefulExtraction).
+    private String cachedRegexSource;
+    private Pattern cachedRegexPattern;
 
     private static final String VERIFY_LOG_BANNER =
             "============================================================";
@@ -92,6 +104,19 @@ public abstract class AIEngine implements HttpHandler {
     }
 
     /**
+     * Parent for modal error dialogs: the main Burp Suite frame. Anchoring to it (instead
+     * of passing {@code null}) makes dialogs appear on the monitor where Burp is displayed
+     * in multi-monitor setups.
+     */
+    protected java.awt.Component dialogParent() {
+        try {
+            return api.userInterface().swingUtils().suiteFrame();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
      * Reset per-attack conversation state. Called by ByteBanterPayloadGenerator
      * each time Intruder starts a new attack so context from a previous attack
      * does not leak into the new one. Does NOT touch the user's prompt in the
@@ -99,7 +124,9 @@ public abstract class AIEngine implements HttpHandler {
      * call to {@link #askAi()}.
      */
     public void resetConversation() {
-        this.messages = new JSONArray();
+        synchronized (convLock) {
+            this.messages = new JSONArray();
+        }
         this.counter = 0;
         // Empty so settingsChanged becomes true on next askAi(), forcing a
         // fresh reseed with the current UI prompt.
@@ -116,7 +143,7 @@ public abstract class AIEngine implements HttpHandler {
             return true;
         }
         if (!silent) {
-            JOptionPane.showMessageDialog(null,
+            JOptionPane.showMessageDialog(dialogParent(),
                     "ByteBanter: Unable to generate payloads or optimize prompts because Burp AI is disabled!"
                             + "\nEnable AI features in Burp settings to use ByteBanter.",
                     "ByteBanter Error", JOptionPane.ERROR_MESSAGE);
@@ -144,36 +171,44 @@ public abstract class AIEngine implements HttpHandler {
         if (isInfiniteRequests || counter < this.requestsLimit) {
             counter++;
 
-            // reset messages on "stateful" change or prompt change
-            boolean settingsChanged = (isStateful != params.getBoolean("stateful"))
-                    || !lastUsedPrompt.equals(params.getString("prompt"));
+            // Build the request context under convLock so a concurrent HTTP-handler thread
+            // (applyStatefulExtraction appending a user turn) cannot mutate 'messages' while
+            // we read/reseed it. A defensive copy is what we send, so the network call runs
+            // outside the lock and does not iterate the live array.
+            synchronized (convLock) {
+                // reset messages on "stateful" change or prompt change
+                boolean settingsChanged = (isStateful != params.getBoolean("stateful"))
+                        || !lastUsedPrompt.equals(params.getString("prompt"));
 
-            isStateful = params.getBoolean("stateful");
-            lastUsedPrompt = params.getString("prompt");
+                isStateful = params.getBoolean("stateful");
+                lastUsedPrompt = params.getString("prompt");
 
-            // Reset if settings changed OR we are in stateless mode (fresh request every time)
-            if (settingsChanged || !isStateful) {
-                messages = new JSONArray();
-                messages.put(new JSONObject().put("role", "system").put("content", lastUsedPrompt));
-            }
-
-            // If stateless, always add the default trigger message
-            if (!isStateful) {
-                messages.put(new JSONObject().put("role", "user").put("content", DEFAULT_MESSAGE));
-            } else {
-                // In stateful mode, if we just reset (have [System]), add the trigger.
-                // Otherwise, 'messages' already contains history.
-                if (messages.length() == 1) {
-                    messages.put(new JSONObject().put("role", "user").put("content", DEFAULT_MESSAGE));
+                // Reset if settings changed OR we are in stateless mode (fresh request every time)
+                if (settingsChanged || !isStateful) {
+                    messages = new JSONArray();
+                    messages.put(new JSONObject().put("role", "system").put("content", lastUsedPrompt));
                 }
+
+                // If stateless, always add the default trigger message
+                if (!isStateful) {
+                    messages.put(new JSONObject().put("role", "user").put("content", DEFAULT_MESSAGE));
+                } else {
+                    // In stateful mode, if we just reset (have [System]), add the trigger.
+                    // Otherwise, 'messages' already contains history.
+                    if (messages.length() == 1) {
+                        messages.put(new JSONObject().put("role", "user").put("content", DEFAULT_MESSAGE));
+                    }
+                }
+                data.remove("messages");
+                data.put("messages", new JSONArray(messages.toString()));
             }
-            data.remove("messages");
-            data.put("messages", messages);
             String responseMessage = sendRequestToAI(data, params);
             // Only advance conversation history on success; a null response (e.g. CLI
             // crash, API error) must not store a null-content entry that corrupts state.
             if (responseMessage != null) {
-                messages.put(new JSONObject().put("role", "assistant").put("content", responseMessage));
+                synchronized (convLock) {
+                    messages.put(new JSONObject().put("role", "assistant").put("content", responseMessage));
+                }
             }
             return responseMessage;
         } else {
@@ -185,7 +220,9 @@ public abstract class AIEngine implements HttpHandler {
     // used for other interaction with the AI (i.e.: prompt optimization)
     public String askAi(String prompt, String user_input) {
         if (!isAIEnabled()) {
-            return prompt;
+            // Signal "no result" (callers leave their field unchanged). Returning the
+            // system prompt here would clobber the caller's text with the meta-prompt.
+            return null;
         }
         JSONObject params = UI.getParams();
         JSONObject data = packData(new JSONObject(), params);
@@ -245,18 +282,82 @@ public abstract class AIEngine implements HttpHandler {
     @Override
     public ResponseReceivedAction handleHttpResponseReceived(HttpResponseReceived httpResponseReceived) {
         JSONObject params = UI.getParams();
-        if (isStateful) {
-            Matcher matcher = Pattern.compile(params.getString("regex")).matcher(httpResponseReceived.bodyToString());
-            if (matcher.find()) {
-                String rxp = params.getBoolean("b64") ? Arrays.toString(Base64.getDecoder().decode(matcher.group(1)))
-                        : matcher.group(1);
-                messages.put(new JSONObject().put("role", "user").put("content", rxp));
-            }
-        }
+        applyStatefulExtraction(httpResponseReceived, params);
         Annotations a = runVerificationIfApplicable(httpResponseReceived, params);
         return a != null
                 ? ResponseReceivedAction.continueWith(httpResponseReceived, a)
                 : ResponseReceivedAction.continueWith(httpResponseReceived);
+    }
+
+    /**
+     * Stateful "Context" extraction. In stateful mode, pulls a string out of the
+     * response (via regex capture group 1 or a user Groovy script) and appends it
+     * to the conversation as the next {@code user} turn. Shared by all engines
+     * (base OpenAI-compatible handler and {@link BurpAIEngine}) so the two
+     * response handlers stay in sync.
+     */
+    protected void applyStatefulExtraction(HttpResponseReceived r, JSONObject params) {
+        if (!isStateful) {
+            return;
+        }
+        String extracted;
+        if ("script".equals(params.optString("extract_mode", "regex"))) {
+            extracted = ResponseScriptRunner.run(params.optString("extract_script", ""), r, api);
+        } else {
+            Matcher matcher = regexFor(params.getString("regex")).matcher(r.bodyToString());
+            if (matcher.find()) {
+                extracted = params.getBoolean("b64")
+                        ? new String(Base64.getDecoder().decode(matcher.group(1)))
+                        : matcher.group(1);
+            } else {
+                extracted = null;
+            }
+        }
+        if (extracted != null) {
+            synchronized (convLock) {
+                messages.put(new JSONObject().put("role", "user").put("content", extracted));
+            }
+        }
+    }
+
+    /**
+     * Returns the compiled {@link Pattern} for the configured regex, recompiling only when
+     * the source string changes. Avoids paying {@link Pattern#compile} on every response.
+     */
+    private Pattern regexFor(String source) {
+        synchronized (convLock) {
+            if (!source.equals(cachedRegexSource)) {
+                cachedRegexPattern = Pattern.compile(source);
+                cachedRegexSource = source;
+            }
+            return cachedRegexPattern;
+        }
+    }
+
+    /**
+     * Applies post-generation payload transforms before the payload is handed to
+     * Intruder. Currently: optional ASCII smuggling (hides text in the invisible
+     * Unicode Tags block). Applied only to the emitted payload — the raw model
+     * text is what {@link #askAi()} stored in {@code messages}, so stateful
+     * conversation history stays clean.
+     */
+    public String applyPayloadTransforms(String payload) {
+        if (payload == null) {
+            return null;
+        }
+        JSONObject p = UI.getParams();
+        if (!p.optBoolean("smuggle_enabled", false)) {
+            return payload;
+        }
+        String hidden = p.optString("smuggle_hidden_text", "");
+        switch (p.optString("smuggle_mode", "Encode entire payload")) {
+            case "Append hidden text to payload":
+                return payload + AsciiSmuggler.encode(hidden);
+            case "Prepend hidden text to payload":
+                return AsciiSmuggler.encode(hidden) + payload;
+            default:
+                return AsciiSmuggler.encode(payload);
+        }
     }
 
     /**
@@ -272,6 +373,11 @@ public abstract class AIEngine implements HttpHandler {
         if (!r.toolSource().isFromTool(ToolType.INTRUDER)) {
             return null;
         }
+        // Synchronous by design: the Intruder result-row highlight is captured from the
+        // Annotations returned here, at the moment the row is drawn. Computing the verdict on a
+        // background thread and mutating annotations afterwards does NOT recolour an already-drawn
+        // row, so the success highlight would be lost. Verification is opt-in, so the per-response
+        // LLM round-trip cost is an accepted trade-off.
         VerificationResult vr = verifyAttack(r, params);
         if (!vr.success) {
             return null;
@@ -293,10 +399,17 @@ public abstract class AIEngine implements HttpHandler {
             // raw HTTP and aligned with what the user already configured.
             // Fallback to raw HTTP request/response when no extracted history exists.
             String contextBlock;
-            if (isStateful && messages != null && messages.length() >= 4) {
-                int historyDepth = Math.max(1, params.optInt("verify_history_depth", 1));
-                contextBlock = buildExtractedConversationBlock(historyDepth);
-            } else {
+            int historyDepth = Math.max(1, params.optInt("verify_history_depth", 1));
+            // Read + iterate 'messages' under convLock so the async verifier sees a consistent
+            // snapshot even while the handler thread appends extracted turns concurrently.
+            synchronized (convLock) {
+                if (isStateful && messages != null && messages.length() >= 4) {
+                    contextBlock = buildExtractedConversationBlock(historyDepth);
+                } else {
+                    contextBlock = null;
+                }
+            }
+            if (contextBlock == null) {
                 int truncateChars = Math.max(500, params.optInt("verify_truncate_chars", 4000));
                 contextBlock = buildHttpFallbackBlock(response, truncateChars);
             }
