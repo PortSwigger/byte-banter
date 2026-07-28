@@ -3,7 +3,7 @@ ExtensionType: 1
 Name: ByteBanter, AI Intruder Payload Generator
 RepoName: byte-banter
 ScreenVersion: 3.0.0
-SerialVersion: 5
+SerialVersion: 6
 MinPlatformVersion: 19
 ProOnly: True
 Author: Andrea Braschi
