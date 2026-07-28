@@ -1,6 +1,7 @@
 package com.anvilsecure.bytebanter;
 
 import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.core.ByteArray;
 import burp.api.montoya.intruder.GeneratedPayload;
 import burp.api.montoya.intruder.IntruderInsertionPoint;
 import burp.api.montoya.intruder.PayloadGenerator;
@@ -11,6 +12,7 @@ import com.anvilsecure.bytebanter.AIEngines.ClaudeCodeEngine;
 import com.anvilsecure.bytebanter.AIEngines.OllamaAIEngine;
 import com.anvilsecure.bytebanter.AIEngines.OpenAIEngine;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -64,7 +66,13 @@ public class ByteBanterPayloadGenerator implements PayloadGenerator {
             if (payload == null || payload.isBlank()) {
                 return GeneratedPayload.end();
             }
-            return GeneratedPayload.payload(payload);
+            // Emit UTF-8 bytes explicitly rather than letting Burp convert the String.
+            // The String overload is not UTF-8 safe: non-ASCII payloads (CJK, Cyrillic,
+            // fullwidth lookalikes) reach the target corrupted, and ASCII-smuggled text
+            // (Tags block U+E0000+, held as surrogate pairs) collapses into visible bytes
+            // instead of staying invisible.
+            return GeneratedPayload.payload(
+                    ByteArray.byteArray(payload.getBytes(StandardCharsets.UTF_8)));
         } catch (Throwable t) {
             // Never propagate an exception from askAi up into Intruder.
             return GeneratedPayload.end();
